@@ -1,0 +1,19 @@
+plant:
+  invertor:
+    - power: 5000
+      asymetric: true
+      price: 50000
+    - power: 5000
+      asymetric: false
+      price: 30000
+  arrays:
+    - power: 2000
+      reference: JV
+      price: 20000
+      increment:
+        power: 450
+        price: 5000
+      cnt: 6
+    - power: 3000
+      reference: JZ
+      price: 30000

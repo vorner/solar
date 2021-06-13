@@ -1,0 +1,17 @@
+[package]
+name = "solar"
+version = "0.1.0"
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow = "1"
+csv = "1"
+env_logger = "0.8"
+itertools = "0.10"
+log = "0.4"
+rayon = "1"
+serde = { version = "1", features = ["derive", "rc"] }
+serde_yaml = "0.8"
+structopt = "0.3"
