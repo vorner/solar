@@ -8,6 +8,8 @@ use structopt::StructOpt;
 use self::site::Site;
 
 mod alternatives;
+mod plant;
+mod reference;
 mod site;
 
 /// Simulate a system with a solar (or other, wind is planned) power plant.
@@ -43,7 +45,7 @@ fn main() -> Result<(), Error> {
         .par_iter()
         .map(|p| {
             debug!("Processing {}", p.display());
-            Site::process(p).with_context(|| format!("Site {}", p.display()))
+            Site::process(p).with_context(|| format!("In site {}", p.display()))
         })
         .collect::<Result<Vec<_>, Error>>()?;
 

@@ -1,84 +1,40 @@
+use std::collections::HashMap;
 use std::fs::File;
-use std::ops::AddAssign;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::path::Path;
 
 use anyhow::Error;
-use itertools::{iproduct, Itertools};
-use serde::{Deserialize, Serialize};
+use rayon::prelude::*;
+use serde::Deserialize;
 
-use crate::alternatives::Alternatives;
-
-#[derive(Clone, Debug, Serialize)]
-pub struct Report {}
-
-#[derive(Copy, Clone, Debug, Default, Deserialize)]
-struct ExtraPower {
-    power: usize,
-    price: usize,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-struct Panels {
-    power: usize,
-    price: usize,
-    reference: Arc<PathBuf>,
-}
-
-impl AddAssign<ExtraPower> for Panels {
-    fn add_assign(&mut self, rhs: ExtraPower) {
-        self.power += rhs.power;
-        self.price += rhs.price;
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-struct Invertor {
-    power: usize,
-    price: usize,
-    asymetric: bool,
-}
-
-impl AddAssign<ExtraPower> for Invertor {
-    fn add_assign(&mut self, rhs: ExtraPower) {
-        self.power += rhs.power;
-        self.price += rhs.price;
-    }
-}
-
-#[derive(Debug)]
-struct PlantAlternative {
-    invertor: Invertor,
-    arrays: Vec<Panels>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-struct Plant {
-    invertor: Alternatives<Invertor, ExtraPower>,
-
-    arrays: Vec<Alternatives<Panels, ExtraPower>>,
-}
-
-impl Plant {
-    fn into_alternatives(self) -> impl Iterator<Item = PlantAlternative> {
-        iproduct!(self.invertor, self.arrays.into_iter().multi_cartesian_product())
-            .map(|(invertor, arrays)| PlantAlternative { invertor, arrays })
-    }
-}
+use crate::plant::Plant;
+use crate::reference::{Reference, TimeSlots};
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct Site {
+    references: HashMap<String, Reference>,
     plant: Plant,
 }
 
 impl Site {
-    pub fn process<P: AsRef<Path>>(def: P) -> Result<Report, Error> {
+    pub fn process<P: AsRef<Path>>(def: P) -> Result<(), Error> {
         let input = File::open(def)?;
         let me: Self = serde_yaml::from_reader(input)?;
 
-        for plant in me.plant.into_alternatives() {
-            println!("{:#?}", plant);
-        }
+        let references: HashMap<String, TimeSlots> = me
+            .references
+            .into_par_iter()
+            .map(|(name, refe)| refe.load().map(|r| (name, r)))
+            .collect::<Result<_, _>>()?;
+
+        dbg!(&references);
+
+        let plants = me.plant.into_alternatives().collect::<Vec<_>>();
+        let reports = plants.into_par_iter().map(|plant| {
+            let report = plant.simulate(&references);
+            (plant, report)
+        }).collect::<Vec<_>>();
+
+        dbg!(reports);
 
         todo!()
     }
