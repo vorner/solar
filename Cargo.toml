@@ -12,6 +12,7 @@ csv = "1"
 env_logger = "0.8"
 itertools = "0.10"
 log = "0.4"
+rand = "0.8"
 rayon = "1"
 serde = { version = "1", features = ["derive", "rc"] }
 serde_yaml = "0.8"

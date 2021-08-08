@@ -1,9 +1,10 @@
-use std::collections::{BinaryHeap, HashMap};
 use std::cmp::Ordering;
+use std::collections::{BinaryHeap, HashMap};
 use std::marker::PhantomData;
 
-use serde::Deserialize;
+use rand::prelude::*;
 use serde::de::{Deserializer, Error, Unexpected};
+use serde::Deserialize;
 
 trait RangeType {
     fn validate<'d, T, D: Deserializer<'d>>(range: &Range<T>) -> Result<(), D::Error>;
@@ -18,7 +19,10 @@ impl RangeType for BasicRange {
             return Err(Error::custom("range bounds crossed"));
         }
         if range.from < 0.0 {
-            return Err(Error::invalid_value(Unexpected::Float(range.from), &"non-negative number"));
+            return Err(Error::invalid_value(
+                Unexpected::Float(range.from),
+                &"non-negative number",
+            ));
         }
         Ok(())
     }
@@ -32,18 +36,27 @@ impl RangeType for DayHours {
         BasicRange::validate::<_, D>(range)?;
 
         if range.to > 24.0 {
-            Err(Error::invalid_value(Unexpected::Unsigned(range.to as _), &"a hour in a day"))
+            Err(Error::invalid_value(
+                Unexpected::Unsigned(range.to as _),
+                &"a hour in a day",
+            ))
         } else {
             Ok(())
         }
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, PartialOrd)]
 struct Range<T: ?Sized> {
     from: f64,
     to: f64,
     _type: PhantomData<T>,
+}
+
+impl<T> Range<T> {
+    fn pick(&self) -> f64 {
+        thread_rng().gen_range(self.from..self.to)
+    }
 }
 
 impl<'d, T: RangeType> Deserialize<'d> for Range<T> {
@@ -65,21 +78,19 @@ impl<'d, T: RangeType> Deserialize<'d> for Range<T> {
         T::validate::<T, D>(&range)?;
 
         if uncheded.from > uncheded.to {
-            return Err(Error::custom("crossed range ‒ from bigger than to"))
+            return Err(Error::custom("crossed range ‒ from bigger than to"));
         }
 
         Ok(range)
     }
 }
 
-fn restrict_whole_day() -> Vec<Range<DayHours>> {
-    vec![
-        Range {
-            from: 0.0,
-            to: 24.0,
-            _type: PhantomData,
-        }
-    ]
+fn restrict_whole_day() -> Range<DayHours> {
+    Range {
+        from: 0.0,
+        to: 24.0,
+        _type: PhantomData,
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -89,7 +100,7 @@ struct Schedule {
     interval_hours: Range<BasicRange>,
 
     #[serde(default = "restrict_whole_day")]
-    restrict_hours: Vec<Range<DayHours>>,
+    restrict_hours: Range<DayHours>,
 
     /// If this hits outside of the restricted hours, it is delayed up to this number of hours
     /// after the first opportunity.
@@ -97,7 +108,7 @@ struct Schedule {
     delay_up_to: f64,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Copy, Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "kebab-case")]
 enum Source {
     Line1,
@@ -118,12 +129,33 @@ enum Source {
 #[serde(rename_all = "kebab-case")]
 struct Usage {
     /// In watts
-    power_kwh: Range<BasicRange>,
+    power: Range<BasicRange>,
 
     /// how long it takes in hours
+    ///
+    /// The total consumption is power * duration
     duration: Range<BasicRange>,
 
     source: Source,
+}
+
+impl Usage {
+    fn pick(&self) -> UsedPower {
+        let mut result = UsedPower {
+            power: self.power.pick(),
+            duration: self.duration.pick(),
+            source: self.source,
+        };
+        if result.source == Source::RandomLine {
+            result.source = match thread_rng().gen_range(1..=3) {
+                1 => Source::Line1,
+                2 => Source::Line2,
+                3 => Source::Line3,
+                _ => unreachable!(),
+            };
+        }
+        result
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Ord, PartialOrd, Hash)]
@@ -157,17 +189,45 @@ struct Request {
 
 impl Request {
     fn next_after(&self, end_time: f64) -> f64 {
+        let schedule = self
+            .schedule
+            .as_ref()
+            .expect("Called next_after on something without a schedule");
 
+        let delay = schedule.interval_hours.pick();
+        let mut start = end_time + delay;
+
+        let part_of_day = start.rem_euclid(24.0);
+
+        let adjust_delay = if part_of_day < schedule.restrict_hours.from {
+            Some(schedule.restrict_hours.from - part_of_day)
+        } else if part_of_day > schedule.restrict_hours.to {
+            Some(schedule.restrict_hours.from + (24.0 - part_of_day))
+        } else {
+            None
+        };
+
+        if let Some(adjust_delay) = adjust_delay {
+            let len = schedule.restrict_hours.to - schedule.restrict_hours.from;
+            let max_delay = if len < schedule.delay_up_to {
+                len
+            } else {
+                schedule.delay_up_to
+            };
+            start += adjust_delay + thread_rng().gen_range(0.0..max_delay);
+        }
+
+        start
     }
 
     fn generate_consumption(&self) -> Vec<UsedPower> {
-        todo!()
+        self.usage.iter().map(Usage::pick).collect()
     }
 }
 
 #[derive(Clone)]
 struct UsedPower {
-    power_kwh: f64,
+    power: f64,
     duration: f64,
     source: Source,
 }
@@ -185,27 +245,29 @@ struct Run<'a> {
 }
 
 impl<'a> Run<'a> {
-     fn new(name: &'a Name, request: &'a Request, start_at: f64, triggered: bool) -> Self {
-         let consumption = request.generate_consumption();
-         let duration: f64 = consumption.iter().map(|p| p.duration).sum();
-         Run {
-             name,
-             request,
-             start_at,
-             end_at: start_at + duration,
-             triggered,
-             consumption,
-         }
-     }
+    fn new(name: &'a Name, request: &'a Request, start_at: f64, triggered: bool) -> Self {
+        let consumption = request.generate_consumption();
+        let duration: f64 = consumption.iter().map(|p| p.duration).sum();
+        Run {
+            name,
+            request,
+            start_at,
+            end_at: start_at + duration,
+            triggered,
+            consumption,
+        }
+    }
 }
 
 impl PartialEq for Run<'_> {
     fn eq(&self, other: &Self) -> bool {
-        self.start_at == other.start_at && self.triggered == other.triggered && self.name == other.name
+        self.start_at == other.start_at
+            && self.triggered == other.triggered
+            && self.name == other.name
     }
 }
 
-impl Eq for Run<'_> { }
+impl Eq for Run<'_> {}
 
 impl PartialOrd for Run<'_> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
@@ -215,9 +277,11 @@ impl PartialOrd for Run<'_> {
 
 impl Ord for Run<'_> {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.start_at.partial_cmp(&other.start_at).expect("We don't deal with weird floats here")
+        self.start_at
+            .partial_cmp(&other.start_at)
+            .expect("We don't deal with weird floats here")
             .then_with(|| self.triggered.cmp(&other.triggered))
-            .then_with(|| self.name.cmp(&other.name))
+            .then_with(|| self.name.cmp(other.name))
     }
 }
 
@@ -235,7 +299,9 @@ impl<'a> IntoIterator for &'a Requests {
     type IntoIter = Iter<'a>;
 
     fn into_iter(self) -> Self::IntoIter {
-        let scheduled = self.0.iter()
+        let scheduled = self
+            .0
+            .iter()
             .filter(|(_, Request { schedule, .. })| schedule.is_some())
             .map(|(name, req)| {
                 let when = req.next_after(0.0);
@@ -262,16 +328,24 @@ impl<'a> Iterator for Iter<'a> {
     fn next(&mut self) -> Option<Self::Item> {
         let scheduled = self.scheduled.pop()?;
 
-        let Run { name, request, end_at, triggered, .. } = scheduled;
+        let Run {
+            name,
+            request,
+            end_at,
+            triggered,
+            ..
+        } = scheduled;
 
         if !triggered {
             let next_time = request.next_after(end_at);
-            self.scheduled.push(Run::new(name, request, next_time, false));
+            self.scheduled
+                .push(Run::new(name, request, next_time, false));
         }
 
         for trig in &request.trigger {
             let trig_req = &self.requests.0[&trig.other]; // TODO: Error handling?
-            self.scheduled.push(Run::new(&trig.other, trig_req, end_at, true));
+            self.scheduled
+                .push(Run::new(&trig.other, trig_req, end_at, true));
         }
 
         Some(scheduled)
