@@ -8,6 +8,7 @@ use structopt::StructOpt;
 use self::site::Site;
 
 mod alternatives;
+mod consumption;
 mod plant;
 mod reference;
 mod site;
