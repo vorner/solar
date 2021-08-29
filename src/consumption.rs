@@ -55,31 +55,46 @@ struct Range<T: ?Sized> {
 
 impl<T> Range<T> {
     fn pick(&self) -> f64 {
-        thread_rng().gen_range(self.from..self.to)
+        thread_rng().gen_range(self.from..=self.to)
     }
 }
 
 impl<'d, T: RangeType> Deserialize<'d> for Range<T> {
     fn deserialize<D: Deserializer<'d>>(deserializer: D) -> Result<Self, D::Error> {
         #[derive(Deserialize)]
-        struct UncheckedRange {
-            from: f64,
-            to: f64,
+        #[serde(untagged)]
+        enum UncheckedRange {
+            Single(f64),
+            Range {
+                from: f64,
+                to: f64,
+            }
         }
 
         let uncheded = UncheckedRange::deserialize(deserializer)?;
 
-        let range = Range {
-            from: uncheded.from,
-            to: uncheded.to,
-            _type: PhantomData,
+        let range = match uncheded {
+            UncheckedRange::Single(val) => {
+                Range {
+                    from: val,
+                    to: val,
+                    _type: PhantomData,
+                }
+            }
+            UncheckedRange::Range { from, to } => {
+                Range {
+                    from,
+                    to,
+                    _type: PhantomData,
+                }
+            }
         };
 
-        T::validate::<T, D>(&range)?;
-
-        if uncheded.from > uncheded.to {
+        if range.from > range.to {
             return Err(Error::custom("crossed range ‒ from bigger than to"));
         }
+
+        T::validate::<T, D>(&range)?;
 
         Ok(range)
     }
@@ -111,8 +126,11 @@ struct Schedule {
 #[derive(Copy, Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "kebab-case")]
 enum Source {
+    #[serde(alias = "l1")]
     Line1,
+    #[serde(alias = "l2")]
     Line2,
+    #[serde(alias = "l3")]
     Line3,
     /// Generator picks randomly which line this is connected to during each run.
     RandomLine,
@@ -122,6 +140,7 @@ enum Source {
     AllLines,
 
     /// Doesn't take electricity, but hot water (the equivalent power)
+    #[serde(alias = "water")]
     HotWater,
 }
 
@@ -225,19 +244,19 @@ impl Request {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct UsedPower {
     power: f64,
     duration: f64,
     source: Source,
 }
 
-#[derive(Clone)]
-struct Run<'a> {
+#[derive(Clone, Debug)]
+pub struct Run<'a> {
     name: &'a Name,
     request: &'a Request,
 
-    start_at: f64,
+    pub start_at: f64,
     end_at: f64,
     triggered: bool,
 
@@ -277,11 +296,13 @@ impl PartialOrd for Run<'_> {
 
 impl Ord for Run<'_> {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.start_at
+        let ord = self.start_at
             .partial_cmp(&other.start_at)
             .expect("We don't deal with weird floats here")
             .then_with(|| self.triggered.cmp(&other.triggered))
-            .then_with(|| self.name.cmp(other.name))
+            .then_with(|| self.name.cmp(other.name));
+        // We want to use a min-heap, not max-heap.
+        ord.reverse()
     }
 }
 
@@ -289,9 +310,9 @@ impl Ord for Run<'_> {
 ///
 /// Can be iterated over. It'll return a sequence of power-consumption events, in increasing order
 /// of their starts. It starts at time 0.0 and is potentially infinite.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 #[serde(transparent)]
-struct Requests(HashMap<Name, Request>);
+pub struct Requests(HashMap<Name, Request>);
 
 impl<'a> IntoIterator for &'a Requests {
     type Item = Run<'a>;
@@ -309,6 +330,8 @@ impl<'a> IntoIterator for &'a Requests {
             })
             .collect();
 
+        dbg!(&scheduled);
+
         Iter {
             requests: self,
             scheduled,
@@ -316,7 +339,7 @@ impl<'a> IntoIterator for &'a Requests {
     }
 }
 
-struct Iter<'a> {
+pub struct Iter<'a> {
     requests: &'a Requests,
 
     scheduled: BinaryHeap<Run<'a>>,

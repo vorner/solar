@@ -22,3 +22,66 @@ plant:
     - power: 3000
       reference: JZ
       price: 30000
+
+consumption:
+  dishwasher:
+    schedule:
+      interval-hours:
+        from: 24
+        to: 36
+      restrict-hours:
+        from: 8
+        to: 22
+      delay-up-to: 6
+    usage:
+      - power: 300
+        duration: 3.2
+        source: l1
+    delay:
+      max-hours: 24
+      max-instances: 1
+  lights:
+    schedule:
+      interval-hours: 24
+    restrict-hours: 22
+    usage:
+      - power: 100
+        duration: 2
+        source: l2
+  bath_michal:
+    schedule:
+      interval-hours: 48
+    restrict-hours:
+      from: 8
+      to: 10
+    usage:
+      # 3.18 * 25 °C * 100l = 7950
+      - power:
+          from: 7000
+          to: 9000
+        duration: 1
+        source: water
+  bath_lukasek:
+    schedule:
+      interval-hours: 24
+    restrict-hours:
+      from: 19
+      to: 20
+    usage:
+      - power:
+          from: 900
+          to: 1000
+        duration: 1
+        source: water
+  shower:
+    schedule:
+      interval_hours: 24
+    restrict-hours:
+      from: 8
+      to: 22
+    usage:
+      - power:
+          from: 4000
+          to: 6000
+        duration: 1
+        source: water
